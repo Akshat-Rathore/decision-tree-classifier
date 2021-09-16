@@ -1,383 +1,496 @@
 import numpy as np
 import math
+from collections import deque
+import matplotlib.pyplot as plt
+
+
 
 INF = 1000
-
-def prob(v,pos,array):
-    total=0
-    match=0
-    l=len(array)
-    for i in range(l):
-        if array[i][pos]==v:
-            match+=1
-    total=l
-    return float(match/total)
+TARGET_COL = 13     # Target column no
+ROWS = 270          # No of data rows
+COLS = 14           # No of columns
+SPLIT_RATIO = 0.8   # Ratio for spliting traning/test data
+MAX_DEPTH = 15      # Maximum depth for growing the tree
+RANDOM_SPLITS = 10  # No of random splits on data set considered
 
 def get_random():
     import random
-    randomlist = random.sample(range(1, 270), 216)
+    randomlist = random.sample(range(1, ROWS), int(ROWS * SPLIT_RATIO))
     return randomlist
 
 class Attribute:
-    def __init__( self,pid,name, dtype, ntype,values=[] ):
-        self.name=name
-        self.id= pid
-        self.type=dtype # discrete or continuous(d or c)
-        self.ntype= ntype   # number of discrete values (0 for c)
-        self.values=values  # list of values stored  
+    def __init__(self, pid, name, dtype, ntype, values=[]):
+        self.name = name
+        self.id = pid
+        self.type = dtype     # discrete or continuous(d or c)
+        self.ntype = ntype   # number of discrete values (0 for c)
+        self.values = values  # list of values stored  
 
     def __str__(self):
         return self.name
 
 class Node:
-    def __init__(self):
-        self.depth = 0             # depth of node
-        self.attribute = None      # attribute of node
-        self.pnode = None          # parent node
-        self.childnodes = []       # list of doublet lists with childnodes and value for which they are the best fit
-        self.lattributes = []      # list of attributes left to use
-        self.data = []             # part of data left to be utilized
-        self.bestfit = 0           # for continuous values, 0 for discrete values
-        self.gini = 0.0
-        self.entropy = 0.0
+    def __init__(self, data, depth, pnode, id, method = "GINI"):
+        self.id = id               # Node-ID
+        self.depth = depth         # depth of node
+        self.attribute = None      # attribute based on which node data is furthur classified (None for pure node)
+        self.pnode = pnode         # parent node
+        self.childnodes = {}       # Dictionary of childnodes (key -> value of attribute and value -> child node)
+        self.data = data           # part of data this node represents
+        self.bestsplitc = None     # for continuous values, None for discrete values
+        self.gini = None           # Gini impurity of the node
+        self.entropy = None        # Entropy of the node
+        self.ginigain = None       # Gini gain
+        self.infogain = None       # information gain
+        self.label = None          # Label <-- For pure Node it's 1 or, 2; Otherwise it's None
 
-    def createnode(self, attribute, lattributes=[], data=[], bestfit=0, gini=0.0, entropy=0.0):
-        a = Node()
-        a.depth = self.depth + 1             # depth of node
-        a.attribute =  attribute     # attribute of node
-        a.childnodes = []       # list of doublet lists with childnodes and value for which they are the best fit
-        a.lattributes = lattributes      # list of attributes left to use
-        a.data = data             # part of data left to be utilized
-        a.bestfit = 0           # for continuous values, 0 for discrete values
-        if a.attribute.type == 'c':
-            a.bestfit = bestfit
-        a.gini = gini
-        a.entropy = entropy
-        a.pnode = self
-        return a
+        if method == "GINI" and len(data) != 0:
+            self.gini = Node.gini_calculator(data)
+            # If pure node initialize the label
+            if self.gini == 0:
+                self.label = data[0][TARGET_COL]
+        if method == "ENTROPY" and len(data) != 0:
+            self.entropy = Node.entropy_calculator(data)
+            # If pure node initialize the label
+            if self.entropy == 0:
+                self.label = data[0][TARGET_COL]
 
-    def bestSplitGini(self,pnode,data, pvalue=None):    # find best split according to gini
-        if pnode.attribute in pnode.lattributes:
-            attrbs = pnode.lattributes.remove(pnode.attribute)
-        else:
-            attrbs = pnode.lattributes
-        # if attrbs==None or data==[]:
-        #     return None
-        max = -INF
-        bestsplit = pnode.attribute     #just initializing with proper datatype
-        bestsplitc = 0
+    def get_most_freq_label(self):
+        one = 0
+        for d in self.data:
+            one += (d[TARGET_COL] == 1)
+        if one >= len(self.data) - one:
+            return 1
+        return 2
+
+    @staticmethod
+    def gini_calculator(data):
+        p = len([d for d in data if d[TARGET_COL] == 1]) / len(data)
+        return  2 * p * (1 - p) 
+
+    @staticmethod
+    def entropy_calculator(data):
+        p = len([d for d in data if d[TARGET_COL] == 1]) / len(data)
+        if p == 0.0 or p == 1.0:
+            return 0
+        return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
+
+    @staticmethod
+    def bestSplitGini(node, data, attrbs):    # find best split according to gini
+        max = -INF           # max gain so far
+        bestsplit = None     #  bestsplitting attribute so far.. initialized to None
+        bestsplitc = None
+        current_gini = node.gini
         for attrb in attrbs:
-            if attrb.type =='c':
-                valueset=[]
+            if attrb.type == 'c':
+                valueset = []
                 pos = attrb.id
                 for i in data:
                     valueset.append(i[pos])
                 valueset.sort()
                 l = len(valueset)
-                bestsplitc = pnode.attribute
+                split_pt = None
                 maxc = -INF
                 for i in range(l):
-                    if i<l-1 and valueset[i]!=valueset[i+1]:
-                        p = i+1/l
-                        q=1-p
-                        j=(valueset[i]+valueset[i+1])/2
-                        gini = 0.0
-                        datav=[]            # gets dataset with value v for attribute attrb
-                        for i in data:
-                            pos = attrb.id 
-                            if i[pos] < j:
-                                datav.append(i)
-                        ans = prob(1,13,datav)
-                        ans*=(1-ans)
-                        p*=ans*2
-                        datav=[]
-                        for i in data:
-                            pos=attrb.id
-                            if i[pos]>j:
-                                datav.append(i)
-                        ans = prob(1,13,datav)
-                        ans*=(1-ans)
-                        q*=ans*2
-                        gini = p+q
-                        gain = pnode.gini -gini
-                        if maxc<gain:
-                            maxc=gain
-                            bestsplitc = j
-                if max<maxc:
-                    max=maxc
+                    if i + 1 < l and valueset[i] != valueset[i + 1]:
+                        j = (valueset[i] + valueset[i + 1]) / 2     # Split point
+                        data_left = [d for d in data if d[attrb.id] <= j]            
+                        data_right = [d for d in data if d[attrb.id] > j]
+                        gini_left = Node.gini_calculator(data_left)
+                        gini_right = Node.gini_calculator(data_right)
+                        gini = (len(data_left) / len(data)) * gini_left + (len(data_right) / len(data)) * gini_right
+                        gain = current_gini - gini
+                        if maxc < gain:
+                            maxc = gain
+                            split_pt = j
+                if split_pt == None:
+                    # Attribute has uniform value over all data 
+                    # So, gini-impurity for this attr = node's gini-impurity
+                    if maxc < node.gini:
+                        maxc = node.gini
+                        split_pt = valueset[0] 
+                if max < maxc:
+                    max = maxc
                     bestsplit = attrb
+                    bestsplitc = split_pt
             else:       
                 gini = 0.0
                 for v in attrb.values:
-                    a = prob(v, attrb.id, data)
-                    datav=[]            # gets dataset with value v for attribute attrb
-                    for i in data:
-                        pos = attrb.id 
-                        if i[pos] == v:
-                            datav.append(i)
-                    ans = prob(1, 13, datav)
-                    ans*=(1-ans)
-                    a*=ans*2
-                    gini+=a      # coz 2 target values
-                ginigain = pnode.gini - gini
-                if max <ginigain:
+                    # gets dataset with value v for attribute attrb
+                    datav = [d for d in data if d[attrb.id] == v]            
+                    if len(datav):
+                        gini += Node.gini_calculator(datav) * (len(datav) / len(data))
+                ginigain = current_gini - gini
+                if max < ginigain:
                     max = ginigain
                     bestsplit = attrb
-        k=0
-        if bestsplit.type=='c':
-            k=bestsplitc
-        child = pnode.createnode(attribute=bestsplit,lattributes= attrbs, data=data,bestfit=k,gini = max)
-        if pvalue !=None:
-            branch=[pvalue, child]
-            self.childnodes.append(branch)
-        return child
 
-    def bestSplitEntropy(self,pnode,data, pvalue=None):            # find best split according to entropy
-        if pnode.attribute in pnode.lattributes:
-            attrbs = pnode.lattributes.remove(pnode.attribute)
+        return_tupple = None
+        # Return type --> <Best splitting attr, max gain, split point (in case of cont. or, -1 for discrete)
+        if bestsplit.type == 'c':
+            return_tupple = (bestsplit, max, bestsplitc)
         else:
-            attrbs = pnode.lattributes
+            return_tupple = (bestsplit, max, -1)
+        return return_tupple
+
+    @staticmethod
+    def bestSplitEntropy(node, data, attrbs):            # find best split according to entropy
         max = -INF
-        bestsplit = pnode.attribute
-        bestsplitc = 0
+        bestsplit = None
+        bestsplitc = None
+        current_entropy = node.entropy
         for attrb in attrbs:
             if attrb.type == 'c':
-                valueset=[]
+                valueset = []
                 pos = attrb.id
                 for i in data:
                     valueset.append(i[pos])
                 valueset.sort()
                 l = len(valueset)
-                bestsplitc = pnode.attribute
                 maxc = -INF
+                split_pt = None
                 for i in range(l):
-                    if i<l-1 and valueset[i]!=valueset[i+1]:
-                        a = i+1/l           # value of |Sv|/|S|
-                        b = 1-a            # value of |Sv|/|S|
-                        j=(valueset[i]+valueset[i+1])/2
+                    if i + 1 < l and valueset[i] != valueset[i + 1]:
+                        j = (valueset[i] + valueset[i + 1]) / 2     # Split point
                         entropysum = 0.0
-                        datav=[]            
-                        for i in data:
-                            pos = attrb.id 
-                            if i[pos] < j:
-                                datav.append(i)
-                        p = prob(1,13,datav)
-                        q = 1-p
-                        if p != 0.0 and p != 1.0:
-                            entropy1 = -p*math.log2(p) - q*math.log2(q)
-                        else:
-                            entropy1 = 0.0
-                        datav=[]
-                        for i in data:
-                            pos = attrb.id
-                            if i[pos] > j:
-                                datav.append(i)
-                        p = prob(1, 13, datav)
-                        q = 1-p
-                        if p != 0.0 and p != 1.0:
-                            entropy2 = -p*math.log2(p) - q*math.log2(q)
-                        else:
-                            entropy2 = 0.0
-                        entropysum = a*entropy1 + b*entropy2
-                        infogain = pnode.entropy- entropysum
-                        if maxc<infogain:
-                            maxc=infogain
-                            bestsplitc = j
-            if max<maxc:
-                max=maxc
-                bestsplit = attrb
+                        data_left = [d for d in data if d[attrb.id] <= j]            
+                        data_right = [d for d in data if d[attrb.id] > j]
+                        entropy_left = Node.entropy_calculator(data_left)
+                        entropy_right = Node.entropy_calculator(data_right)
+                        entropysum = (len(data_left) / len(data)) * entropy_left + (len(data_right) / len(data)) * entropy_right
+                        infogain = current_entropy - entropysum
+                        if maxc < infogain:
+                            maxc = infogain
+                            split_pt = j
 
+                if split_pt == None:
+                    # Attribute has uniform value over all data 
+                    # So, entropy for this attr = node's entropy
+                    if maxc < node.entropy:
+                        maxc = node.entropy
+                        split_pt = valueset[0] 
+                if max < maxc:
+                    max = maxc
+                    bestsplit = attrb
+                    bestsplitc = split_pt
             else:
-                entropysum=0.0
+                entropysum = 0.0
                 for v in attrb.values:
-                    a = prob(v, attrb.id, data)     # | Sv|/| S|
-                    datav=[]            # gets dataset with value v for attribute attrb
-                    for i in data:
-                        pos = attrb.id 
-                        if i[pos] == v:
-                            datav.append(i)
-                    p = prob(1, 13, datav)
-                    q=1-p
-                    entropy = 0.0
-                    if p != 0.0 and p != 1.0:
-                        entropy = -p*math.log2(p) - q*math.log2(q)
-                    else:
-                        entropy = 0.0
-                    entropysum += a*entropy
-                gain = pnode.entropy - entropysum
+                    # gets dataset with value v for attribute attrb
+                    datav = [d for d in data if d[attrb.id] == v]            
+                    if len(datav):
+                        entropysum += Node.entropy_calculator(datav) * (len(datav) / len(data))
+                gain = current_entropy - entropysum
                 if max < gain:
                     max = gain
                     bestsplit = attrb
-            k=0
-            if bestsplit.type=='c':
-                k=bestsplitc
-
-        child = pnode.createnode(attribute=bestsplit,lattributes= attrbs, data=data,bestfit=k,entropy = max  )
-        if pvalue !=None:
-            branch=[pvalue, child]
-            self.childnodes.append(branch)
-        return child
+        
+        return_tupple = None
+        # Return type --> <Best splitting attr, max gain, split point (in case of cont. or, -1 for discrete)
+        if bestsplit.type == 'c':
+            return_tupple = (bestsplit, max, bestsplitc)
+        else:
+            return_tupple = (bestsplit, max, -1)
+        return return_tupple
 
     def __str__(self):
-        return self.attribute.name
+        if self.gini != None:
+            if self.pnode == None:
+                return f"<Root, Node-ID-{self.id}, data-{len(self.data)}, attr-{self.attribute}, gini-{self.gini}, label-{self.label}>"
+            return f"<parent-{self.pnode.id}, Node-ID-{self.id}, data-{len(self.data)}, attr-{self.attribute}, gini-{self.gini}, label-{self.label}>"
+        else:
+            if self.pnode == None:
+                return f"<Root, Node-ID-{self.id}, data-{len(self.data)}, attr-{self.attribute}, entropy-{self.entropy}, label-{self.label}>"
+            return f"<parent-{self.pnode.id}, Node-ID-{self.id}, data-{len(self.data)}, attr-{self.attribute}, entropy-{self.entropy}, label-{self.label}>" 
     
 
 class DecisionTree:
-    def __init__(self, maxdepth):
+    def __init__(self, maxdepth = None):
         self.maxdepth = maxdepth
-        self.nnode = 0
-        self.currentdepth = 0
-        self.root = Node()
+        self.count = 0
+        self.depth = 0
+        self.root = None
+        self.start_id = 0
 
-    def makeroot(self, attributelist,data, method="GINI" ):
-        root = Node()
-        root.depth = 0
-        root.data = data
-        root.lattributes = attributelist
-        if method=="ENTROPY":
-            root = root.bestSplitEntropy(root, data)
-        else:
-            root = root.bestSplitGini(root, data)
-        return root
-
-    def growtree(self,node, method="GINI"):
-        if node.depth >= self.maxdepth:
-            return
-        attribute = node.attribute
-
-        if attribute.type=='c':
-            data=[]
-            pos = attribute.id
-            for row in node.data:
-                if row[pos]<=node.bestfit:   # for continuous values less than bestfit
-                    data.append(row)
-            if method=="GINI":
-                childnode = node.bestSplitGini(node, data, node.bestfit)
-                print(childnode)
-                if childnode is None:
-                        return
-                self.nnode+=1
-                if(self.currentdepth<childnode.depth):
-                    self.currentdepth=childnode.depth
-                growtree(childnode,"GINI")
-            else:
-                childnode = node.bestSplitEntropy(node, data, node.bestfit)
-                print(childnode)
-                if childnode is None:
-                        return
-                self.nnode+=1
-                if(self.currentdepth<childnode.depth):
-                    self.currentdepth=childnode.depth
-                growtree(childnode,"ENTROPY")
-            data=[]
-            pos = attribute.id
-            for row in node.data:
-                if row[pos]>node.bestfit:       # for continuous values more than bestfit
-                    data.append(row)
-            if method=="GINI":
-                childnode = node.bestSplitGini(node, data, value)
-                print(childnode)
-                if childnode is None:
-                        return
-                self.nnode+=1
-                if(self.currentdepth<childnode.depth):
-                    self.currentdepth=childnode.depth
-                growtree(childnode,"GINI")
-            else:
-                childnode = node.bestSplitEntropy(node, data, value)
-                print(childnode)
-                if childnode is None:
-                        return
-                self.nnode+=1
-                if(self.currentdepth<childnode.depth):
-                    self.currentdepth=childnode.depth
-                growtree(childnode,"ENTROPY")
+    def generateDT(self, attrs, data, method = "GINI", depth = 0, node = None):
+        self.depth = max(self.depth, depth)
+        # Initialize the root if not None
+        if self.root == None:
+            self.root = Node(data, 0, None, self.start_id, method)
+            self.start_id += 1
+            self.count += 1
+            node = self.root
         
-        else:    
-            for value in atribute.values:
-                data=[]
-                pos = attribute.id
-                for row in node.data:
-                    if row[pos]==value:
-                        data.append(row)
-                if method=="GINI":
-                    childnode = node.bestSplitGini(node, data, value)
-                    if childnode is None:
-                        return
-                    self.nnode+=1
-                    if(self.currentdepth<childnode.depth):
-                        self.currentdepth=childnode.depth
-                    growtree(childnode,"GINI")
+        # Base cases
+        # Base case - 1 -> Pure Node
+        if method == "GINI" and node.gini == 0:
+            return
+        if method == "ENTROPY" and node.entropy == 0:
+            return
+
+        # Base Case - 2 -> Attribute list is empty
+        if len(attrs) == 0:
+            # Initialize label with most frequent label in data
+            node.label = node.get_most_freq_label()
+            return
+
+        # Base Case - 3 -> Depth limit (if any)
+        if self.maxdepth is not None and node.depth == self.maxdepth:
+            # Initialize label with most frequent labelling in data
+            node.label = node.get_most_freq_label()
+            return
+
+        # Get the best attribute that classifies the current node's data
+        bestattr = None 
+        gain = None 
+        split_point = None 
+        if method == "GINI":
+            (bestattr, gain, split_point) = Node.bestSplitGini(node, data, attrs)
+            node.ginigain = gain
+        else:
+            (bestattr, gain, split_point) = Node.bestSplitEntropy(node, data, attrs)
+            node.infogain = gain
+        
+        node.attribute = bestattr   
+        # Create branches and continue recursion
+        attrs.remove(bestattr)  # Remove the bestatrr since it's not usable in current node's subtree
+        if bestattr.type == 'c':
+            # Only two children
+            self.count += 2
+            left_partition = [d for d in data if d[bestattr.id] < split_point]
+            right_partition = [d for d in data if d[bestattr.id] >= split_point]
+            left_child = Node(left_partition, depth + 1, node, self.start_id, method)
+            self.start_id += 1
+            right_child = Node(right_partition, depth + 1, node, self.start_id, method)
+            self.start_id += 1
+            node.bestsplitc = split_point
+            node.childnodes[0] = left_child                                   
+            node.childnodes[1] = right_child
+            if len(left_partition) == 0:
+                left_child.label = node.get_most_freq_label()
+            else:
+                self.generateDT(attrs, left_partition, method, depth + 1, left_child)
+
+            if len(right_partition) == 0:
+                right_child.label = node.get_most_freq_label()
+            else:
+                self.generateDT(attrs, right_partition, method, depth + 1, right_child)
+        else:
+            for v in bestattr.values:
+                self.count += 1                                                                 # Increase total node count
+                partition = [d for d in data if d[bestattr.id] == v]                            # partition of data having bestattr value = v in data
+                child = Node(partition, depth + 1, node, self.start_id, method)                 # Create new child node for this partition
+                self.start_id += 1
+                node.childnodes[v] = child                                                      # Store the branch information
+                if len(partition) == 0: 
+                    # If partition is empty initialize the label of child as the most freq label of parent node
+                    child.label = node.get_most_freq_label()
                 else:
-                    childnode = node.bestSplitEntropy(node, data, value)
-                    if childnode is None:
-                        return
-                    self.nnode+=1
-                    if(self.currentdepth<childnode.depth):
-                        self.currentdepth=childnode.depth
-                    growtree(childnode,"ENTROPY")
-
-        return
+                    self.generateDT(attrs, partition, method, depth + 1, child)     # Continue recursion for child node with data = partition (non-empty)
 
 
-def printInfo(node,value, width=4,method="GINI"):
-    const = int(node.depth *width**1.5)
-    spaces = "-" * const
-    print(f"|{spaces}  {node}")
-    if node.pnode==None:
-        print(f"{' ' * const}   | At Value: {value} of {node.pnode}")
-    if method=="GINI":
-        print(f"{' ' * const}   | GINI impurity of the node: {round(node.gini, 2)}")
-    else:
-        print(f"{' ' * const}   | Entropy impurity of the node: {round(node.entropy, 2)}")
+        attrs.append(bestattr)    # Reinsert bestattr
+
+    # Evaluates a single data
+    def evaluate(self, data):
+        node = self.root
+        # Keep traversing the DT until reaching a leaf or, pure node
+        while node.label == None:
+            attr_val = data[node.attribute.id]  # Corresponding attr value for data
+            if node.attribute.type == 'c':
+                if attr_val <= node.bestsplitc:
+                    node = node.childnodes[0]   # If less than go to left child
+                else:                           # Else go to right child
+                    node = node.childnodes[1]
+            else:
+                node = node.childnodes[attr_val]    # Go to the branch having the attr_val
+        return node.label == data[TARGET_COL]
+
+    # Measures the accuracy rate for a given test data
+    # Accuracy rate <-- No of correct classifications / Total data size
+    def accuracy_test(self, data):
+        correct = 0
+        for d in data:
+            correct += self.evaluate(d)
+        return correct / len(data)
+
+    # Prints the DT in level order 
+    def print_tree(self):
+        q = deque()
+        q.append((None, self.root))
+        while len(q):
+            l = len(q)
+            # Pop each node in the current level and insert children of them
+            for _ in range(l):
+                (branch, node) = q.popleft()
+                print(f"<branch-{branch}, ", end = '')
+                print(node, end = '')
+                print(">")
+                for (key, child) in node.childnodes.items():
+                    if node.attribute.type == 'c':
+                        if key == 0:
+                            q.append((f"<= {node.bestsplitc}", child))
+                        else:
+                            q.append((f"> {node.bestsplitc}", child))
+                    else:
+                        q.append((key, child))
+            print("=========================================================================================")
 
 
-def printTree(nodebranch, method="GINI"): #pass [root,0] for printing
-    printInfo(node=nodebranch[1],value=nodebranch[0],method=method )
-    for childbranch in nodebranch[1].childnodes:
-        printTree(childbranch, method)
-    return
+# Given a training data it returns the attribute list
+def generate_attribute_list(training_data):
+    d = np.array(training_data)
+    value = d.transpose()
+    value = value.tolist()
 
+    # Create the list of attribute
+    age = Attribute(pid=0, name="age", dtype='c', ntype=0 , values=value[0])
+    gender = Attribute(pid=1, name="gender", dtype='d', ntype=2 , values=[0.0,1.0])
+    pain = Attribute(pid=2, name="Chest Pain Type", dtype='d', ntype=4 , values=[1.0,2.0,3.0,4.0])
+    systolicp = Attribute(pid=3, name="systollicpressure", dtype='c', ntype=0 , values=value[3])
+    cholestrol = Attribute(pid=4, name="serum cholestrol", dtype='c', ntype=0 , values=value[4])
+    sugar = Attribute(pid=5, name="Fasting Blood Sugar", dtype='d', ntype=2 , values=[1.0,0.0])
+    ecg = Attribute(pid=6, name="ECG", dtype='d', ntype=3 , values=[0.0,1.0,2.0])
+    maxhr = Attribute(pid=7, name="Maximum Heart Rate", dtype='c', ntype=0 , values=value[7])
+    angina = Attribute(pid=8, name="Angina", dtype='d', ntype=2 , values=[0.0,1.0])
+    oldpeak = Attribute(pid=9, name="Oldpeak", dtype='c', ntype=0 , values=value[9])
+    stpeak = Attribute(pid=10, name="Slope of Peak Exercise ST segment", dtype='d', ntype=3 , values=[1.0,2.0,3.0])
+    majorcv = Attribute(pid=11, name="Major Vessels Coloured", dtype='d', ntype=4 , values=[0.0,1.0,2.0,3.0])
+    thal = Attribute(pid=12, name="thal", dtype='d', ntype=3 , values=[3.0,6.0,7.0])
+    result = Attribute(pid=13, name="Distinct Class Value", dtype='d', ntype=2 , values=[0.0,1.0])
+
+    attributelist = [age, gender, pain, systolicp, cholestrol, sugar, ecg, maxhr, angina, oldpeak, stpeak, majorcv, thal]
+    return attributelist
+
+
+# This function generates a random permutation to build test and training set
+def create_training_test_data(data):
+    training_set = get_random()     # Random subset of permutation of size 216 (80%)
+    training_data = []              # Stores the training data
+    test_data = []                  # Stores the test data
+    for i in training_set:
+        training_data.append(data[i])
+    for i in range(ROWS):
+        if i not in training_set:
+            test_data.append(data[i])
+
+    return (training_data, test_data, training_set)
+
+# 10 random splitting for question - 1 and question - 2
+# It also returns the traning set that gives the best accuracy
+def random_splitting(data):
+    print("Gini based DT accuracy vs. Information Gain based DT accuracy:")
+    print("=============================================================")
+    avg_gini_acc = 0
+    avg_ig_acc = 0
+    best_acc = 0
+    best_split = None
+    for _ in range(RANDOM_SPLITS):
+        (training_data, test_data, training_set) = create_training_test_data(data)
+        attributelist = generate_attribute_list(training_data)
+        # DT based on GINI hill climbing function
+        D1 = DecisionTree()
+        D1.generateDT(attributelist, training_data, "GINI")
+        accuracy1 = D1.accuracy_test(test_data)
+        # DT based on Information gain hill climbing function
+        D2 = DecisionTree()
+        D2.generateDT(attributelist, training_data, "ENTROPY")
+        accuracy2 = D2.accuracy_test(test_data)
+
+        print(f"<Gini based DT - {accuracy1}>, <Information Gain based DT - {accuracy2}>")
+        avg_gini_acc += accuracy1
+        avg_ig_acc += accuracy2
+
+        # Update training set if accuracy is more here
+        if max(accuracy1, accuracy2) > best_acc:
+            best_acc = max(accuracy1, accuracy2)
+            best_split = [training_data, test_data]
+
+    avg_gini_acc /= RANDOM_SPLITS
+    avg_ig_acc /= RANDOM_SPLITS
+    # Print avg performance of both trees
+    print(f"<Avg. accuracy Gini based DT - {avg_gini_acc}>, <Avg. accuracy Information Gain based DT - {avg_ig_acc}>")
+    print("==================================================================================================================")
+
+    return best_split
+
+# Plots depth vs. accuracy and total node count vs. accuracy (Q3)
+def depth_node_analysis(data):
+    for _ in range(RANDOM_SPLITS // 3):
+        # Plot for height vs. Accuracy
+        fig1, (ax1, ax2) = plt.subplots(1, 2)
+        ax1.set(xlabel = 'Max Depth',
+            ylabel = 'Accuracy',
+            title = 'Max Depth vs. Accuracy Graph')
+
+        # Plot for count of nodes vs. Accuracy
+        # fig2, ax2 = plt.subplots()
+        ax2.set(xlabel = 'Count of Nodes',
+            ylabel = 'Accuracy',
+            title = 'Nodes Count vs. Accuracy Graph')
+
+        Gini_plot = []      # Stores the accuracy of Gini based DT 
+        Gini_count = []     # Stores the count of nodes in the corresponding Gini based DT
+        IG_plot = []        # Stores the accuracy of IG based DT
+        IG_count = []       # Stores the count of nodes in the corresponding IG based DT
+
+        (training_data, test_data, _) = create_training_test_data(data)
+        attributelist = generate_attribute_list(training_data)
+
+        for max_depth in range(MAX_DEPTH + 1):
+            # DT based on GINI hill climbing function
+            D1 = DecisionTree(max_depth)
+            D1.generateDT(attributelist, training_data, "GINI")
+            accuracy1 = D1.accuracy_test(training_data)
+            Gini_count.append(D1.count)
+            # DT based on Information gain hill climbing function
+            D2 = DecisionTree(max_depth)
+            D2.generateDT(attributelist, training_data, "ENTROPY")
+            accuracy2 = D2.accuracy_test(training_data)
+            IG_count.append(D2.count)
+            Gini_plot.append(accuracy1)
+            IG_plot.append(accuracy2)
+
+
+        # Plot the corresponding depth vs. accuracy graph
+        x = range(MAX_DEPTH + 1)
+        ax1.plot(x, Gini_plot, "oy", label = "Gini Based DT")
+        ax1.plot(x, IG_plot, "or", label = "IG Based DT")
+        ax1.legend(shadow = True, fancybox = True)
+        ax1.plot(x, Gini_plot, 
+                x, Gini_plot, "oy",
+                x, IG_plot,
+                x, IG_plot, "or")
+
+        ax2.plot(Gini_count, Gini_plot, "oy", label = "Gini Based DT")
+        ax2.plot(IG_count, IG_plot, "or", label = "IG Based DT")
+        ax2.legend(shadow = True, fancybox = True)
+        ax2.plot(Gini_count, Gini_plot, 
+                Gini_count, Gini_plot, "oy",
+                IG_count, IG_plot,
+                IG_count, IG_plot, "or")
+        
+        plt.show()
 
 
 
 def main():
-    training_set=get_random()
+    data = []   # Stores the whole dataset
     with open('../heart.dat') as f:
         lines = f.readlines()
-    data=[]
-    for i in training_set:
-        data.append(lines[i].split())
-    for i in range(216):
-        for j in range(14):
-            data[i][j]=float(data[i][j])
-    d=np.array(data)
-    value=d.transpose()
-    value=value.tolist()
+    for line in lines:
+        data.append([float(x) for x in line.split()])
 
-    age=Attribute(pid=0,name="age", dtype='c', ntype=0 , values=value[0])
-    gender=Attribute(pid=1,name="gender", dtype='d', ntype=2 , values=[0.0,1.0])
-    pain=Attribute(pid=2,name="Chest Pain Type", dtype='d', ntype=4 , values=[1.0,2.0,3.0,4.0])
-    systolicp=Attribute(pid=3,name="systollicpressure", dtype='c', ntype=0 , values=value[3])
-    cholestrol=Attribute(pid=4,name="serum cholestrol", dtype='c', ntype=0 , values=value[4])
-    sugar=Attribute(pid=5,name="Fasting Blood Sugar", dtype='d', ntype=2 , values=[1.0,0.0])
-    ecg=Attribute(pid=6,name="ECG", dtype='d', ntype=3 , values=[0.0,1.0,2.0])
-    maxhr=Attribute(pid=7,name="Maximum Heart Rate", dtype='c', ntype=0 , values=value[7])
-    angina=Attribute(pid=8,name="Angina", dtype='d', ntype=2 , values=[0.0,1.0])
-    oldpeak=Attribute(pid=9,name="Oldpeak", dtype='c', ntype=0 , values=value[9])
-    stpeak=Attribute(pid=10,name="Slope of Peak Exercise ST segment", dtype='d', ntype=3 , values=[1.0,2.0,3.0])
-    majorcv=Attribute(pid=11,name="Major Vessels Coloured", dtype='d', ntype=4 , values=[0.0,1.0,2.0,3.0])
-    thal=Attribute(pid=12,name="thal", dtype='d', ntype=3 , values=[3.0,6.0,7.0])
-    result=Attribute(pid=13,name="Distinct Class Value", dtype='d', ntype=2 , values=[0.0,1.0])
+    # Best Split contains (best training data, corresponding test data, correspoding training set permutation)
+    best_split = random_splitting(data)
+    # Function call for depth vs. accuracy and node count vs. accuracy analysis
+    depth_node_analysis(data)
 
-    attributelist=[age,gender,pain, systolicp,cholestrol,sugar,ecg,maxhr,angina,oldpeak,stpeak,majorcv,thal]
-    D = DecisionTree(8)
-    root = D.makeroot(attributelist,data, "ENTROPY")
-    D.growtree(root)
-    printTree([0,root],"ENTROPY")
-    # print(root)
-    
-
+    # Print Tree
+    attrib_list = generate_attribute_list(best_split[0])
+    D = DecisionTree()
+    D.generateDT(attrib_list, best_split[0], "GINI")
+    D.print_tree()
     
 
 if __name__ == "__main__":
