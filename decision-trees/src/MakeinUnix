@@ -1,0 +1,18 @@
+VENV =venvCS60050
+.PHONY: clean run
+PYTHON =$(VENV)/bin/python
+PIP =$(VENV)/bin/pip
+
+run:$(VENV)/bin/activate
+	$(PYTHON) "main.py"
+
+
+$(VENV)/bin/activate: requirements.txt
+	virtualenv $(VENV)
+	$(PIP) install --no-cache-dir -r requirements.txt
+
+
+clean:
+	rm -rf __pycache__
+	rm -rf $(VENV)
+	rm -rf *.dot
